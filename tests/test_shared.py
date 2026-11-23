@@ -113,7 +113,7 @@ def test_describe_never_shows_bytes() -> None:
         == "ByteStream a.pdf"
     )
     assert describe(ByteStream(data=b"secret bytes")) == "a ByteStream of 12 bytes"
-    assert describe(Path("x/y.pdf")) == "x/y.pdf"
+    assert describe(Path("x/y.pdf")) == str(Path("x/y.pdf"))
 
 
 def test_text_steps() -> None:

@@ -31,8 +31,9 @@ def files(tmp_path: Path) -> Path:
     (tmp_path / "photo.heic").write_bytes(b"heic bytes")
     (tmp_path / "raw.cr2").write_bytes(b"raw bytes")
     (tmp_path / "clip.mp4").write_bytes(b"video bytes")
-    (tmp_path / "notes.txt").write_text("Plain notes, déjà vu\n", encoding="utf-8")
-    (tmp_path / "data.json").write_text('{"a": 1}', encoding="utf-8")
+    # Bytes, so Windows does not write CRLF.
+    (tmp_path / "notes.txt").write_bytes("Plain notes, déjà vu\n".encode())
+    (tmp_path / "data.json").write_bytes(b'{"a": 1}')
     (tmp_path / "broken.docx").write_bytes(BROKEN)
     return tmp_path
 

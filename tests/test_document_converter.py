@@ -21,7 +21,7 @@ from haystack_integrations.components.converters.converter_studio import (
     __version__,
 )
 
-from .fake_api import BROKEN, KEY, SCAN, TEXT_PDF, FakeAPI, error_response
+from .fake_api import BROKEN, KEY, MARKDOWN, SCAN, TEXT_PDF, FakeAPI, error_response
 
 
 def converter(api: FakeAPI, **kwargs: Any) -> ConverterStudioDocumentConverter:
@@ -124,6 +124,92 @@ def test_a_spreadsheet_becomes_csv(api: FakeAPI, files: Path) -> None:
     assert documents["documents"][0].content == "name,age\nAda,36\n"
     assert api.conversions[0]["to"] == "csv"
     assert api.conversions[0]["options"] == {"sheet": 2}
+
+
+def test_a_presentation_page_range_picks_the_slides_once(api: FakeAPI, files: Path) -> None:
+    # The slides picked become the PDF; that PDF is read whole (its pages 2-3 would not exist).
+    converter(api, options={"pageRange": "2-3", "ocrLanguage": "de"}).run(
+        sources=[files / "deck.pptx"]
+    )
+    assert [body["to"] for body in api.conversions] == ["pdf", "txt"]
+    assert options_sent(api) == [{"pageRange": "2-3", "ocrLanguage": "de"}, {"ocrLanguage": "de"}]
+
+
+def test_a_page_range_alone_is_not_sent_to_the_second_step(api: FakeAPI, files: Path) -> None:
+    converter(api, options={"pageRange": "1"}).run(sources=[files / "deck.pptx"])
+    assert options_sent(api) == [{"pageRange": "1"}, None]
+
+
+def test_a_pdf_page_range_is_sent(api: FakeAPI, files: Path) -> None:
+    converter(api, options={"pageRange": "1-2"}).run(sources=[files / "scan.pdf"])
+    assert options_sent(api) == [{"pageRange": "1-2"}, {"pageRange": "1-2", "ocr": True}]
+
+
+# Markdown
+
+
+def test_markdown_for_a_word_document(api: FakeAPI, files: Path) -> None:
+    documents = converter(api, output_format="markdown").run(sources=[files / "letter.docx"])
+    document = documents["documents"][0]
+    assert document.content == MARKDOWN.decode()
+    assert document.meta["converter_studio"] == {
+        "source_format": "docx",
+        "ocr": False,
+        "content_format": "md",
+    }
+    assert [body["to"] for body in api.conversions] == ["md"]
+
+
+def test_markdown_falls_back_to_text_where_the_api_makes_none(api: FakeAPI, files: Path) -> None:
+    names = ("report.pdf", "scan.pdf", "sheet.xlsx", "deck.pptx", "photo.heic", "notes.txt")
+    sources: list[str | Path | ByteStream] = [files / name for name in names]
+    documents = converter(api, output_format="markdown").run(sources=sources)["documents"]
+    assert [d.content for d in documents] == [
+        "Page one\n\fPage two\n\f",
+        "Text read by OCR\n",
+        "name,age\nAda,36\n",
+        "Slide one\n\fSlide two\n\f",
+        "Text in a picture\n",
+        "Plain notes, déjà vu\n",
+    ]
+    assert [d.meta["converter_studio"]["content_format"] for d in documents] == [
+        "txt",
+        "txt",
+        "csv",
+        "txt",
+        "txt",
+        "txt",
+    ]
+    # The scan's first try finds no text and is read again with OCR; the slides go through a PDF.
+    assert [body["to"] for body in api.conversions] == [
+        "txt",
+        "txt",
+        "txt",
+        "csv",
+        "pdf",
+        "txt",
+        "txt",
+    ]
+
+
+def test_text_stays_the_default(api: FakeAPI, files: Path) -> None:
+    documents = converter(api).run(sources=[files / "letter.docx"])["documents"]
+    assert documents[0].content == "Word text: café\n"
+    # The metadata (and so the Documents' IDs) are what 1.0 made.
+    assert documents[0].meta["converter_studio"] == {"source_format": "docx", "ocr": False}
+
+
+@pytest.mark.anyio
+async def test_markdown_in_run_async(api: FakeAPI, files: Path) -> None:
+    component = converter(api, output_format="markdown")
+    result = await component.run_async(sources=[files / "letter.docx", files / "report.pdf"])
+    assert [d.content for d in result["documents"]] == [
+        MARKDOWN.decode(),
+        "Page one\n\fPage two\n\f",
+    ]
+    # Converted at the same time: the requests come in either order.
+    assert sorted(body["to"] for body in api.conversions) == ["md", "txt"]
+    await component.close_async()
 
 
 def test_text_formats_are_read_here(api: FakeAPI, files: Path) -> None:
@@ -368,6 +454,8 @@ def test_settings_are_checked() -> None:
         ConverterStudioDocumentConverter(timeout=0)
     with pytest.raises(ValueError, match="concurrency_limit"):
         ConverterStudioDocumentConverter(concurrency_limit=0)
+    with pytest.raises(ValueError, match="output_format must be one of text, markdown"):
+        ConverterStudioDocumentConverter(output_format="md")  # type: ignore[arg-type]
 
 
 # Async

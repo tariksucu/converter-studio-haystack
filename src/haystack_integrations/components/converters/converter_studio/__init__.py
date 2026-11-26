@@ -7,12 +7,13 @@
 """
 
 from ._version import __version__
-from .document_converter import ConverterStudioDocumentConverter, OCRMode
+from .document_converter import ConverterStudioDocumentConverter, OCRMode, OutputFormat
 from .file_converter import ConverterStudioFileConverter
 
 __all__ = [
     "ConverterStudioDocumentConverter",
     "ConverterStudioFileConverter",
     "OCRMode",
+    "OutputFormat",
     "__version__",
 ]

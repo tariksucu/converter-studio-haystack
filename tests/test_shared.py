@@ -134,6 +134,20 @@ def test_text_steps() -> None:
         steps("cr2", "never")
 
 
+def test_text_steps_for_markdown() -> None:
+    def steps(format_id: str | None) -> tuple[str, ...]:
+        return text_steps(CATALOG.get(format_id), "auto", "markdown")
+
+    # Markdown where the API makes it; the plain-text route for everything else.
+    assert steps("docx") == ("md",)
+    assert steps("pdf") == ("txt",)
+    assert steps("png") == ("txt",)
+    assert steps("xlsx") == ("csv",)
+    assert steps("pptx") == ("pdf", "txt")
+    assert steps(None) == ("txt",)
+    assert text_steps(CATALOG.get("docx"), "auto") == ("txt",)
+
+
 def test_the_client_name() -> None:
     assert f"haystack/{__version__}" == CLIENT_NAME
     # The Python client takes it (it raises ValueError on a name the header cannot carry).

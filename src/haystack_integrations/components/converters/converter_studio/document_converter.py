@@ -42,22 +42,34 @@ OCRMode = Literal["auto", "always", "never"]
 read with OCR. ``always``: PDFs straight to OCR, for scans (it skips the first try). ``never``:
 no OCR; scanned PDFs and pictures are skipped."""
 
+OutputFormat = Literal["text", "markdown"]
+"""What the Documents' text is.
+
+``text``: plain text. ``markdown``: Markdown (GitHub's flavour, made by Pandoc) for the formats the
+API makes Markdown of (Word, OpenDocument, RTF and HTML documents), which keeps their headings,
+lists and tables; every other format gives the same text as with ``text``."""
+
 #: Formats that are text already: read here, without a request and without credits.
 LOCAL_TEXT_FORMATS = frozenset({"txt", "md", "csv", "json", "xml", "yaml", "srt", "vtt", "ass"})
 
 _File = str | Path | bytes
 
 
-def text_steps(source: Format | None, ocr: OCRMode) -> tuple[str, ...]:
-    """The conversions that make text of a format: ``("txt",)`` where the API makes text of it
-    (documents, PDFs, e-books, pictures by OCR), ``("csv",)`` for spreadsheets (the first sheet),
-    ``("pdf", "txt")`` for what only becomes a PDF (presentations, vector drawings, camera RAW
-    photos). An unknown format is tried as text."""
+def text_steps(
+    source: Format | None, ocr: OCRMode, output_format: OutputFormat = "text"
+) -> tuple[str, ...]:
+    """The conversions that make text of a format: ``("md",)`` with ``output_format="markdown"``
+    where the API makes Markdown of it (Word, OpenDocument, RTF, HTML), ``("txt",)`` where the API
+    makes text of it (documents, PDFs, e-books, pictures by OCR), ``("csv",)`` for spreadsheets
+    (the first sheet), ``("pdf", "txt")`` for what only becomes a PDF (presentations, vector
+    drawings, camera RAW photos). An unknown format is tried as text."""
     if source is None:
         return ("txt",)
     picture = source.category == "image"
-    if "txt" in source.targets:
-        steps: tuple[str, ...] = ("txt",)
+    if output_format == "markdown" and "md" in source.targets:
+        steps: tuple[str, ...] = ("md",)
+    elif "txt" in source.targets:
+        steps = ("txt",)
     elif "csv" in source.targets:
         steps = ("csv",)
     elif "pdf" in source.targets:
@@ -77,6 +89,15 @@ def _with_ocr(options: dict[str, Any] | None, ocr: bool) -> dict[str, Any] | Non
     return {**(options or {}), "ocr": True}
 
 
+def _step_options(options: dict[str, Any] | None, index: int) -> dict[str, Any] | None:
+    """The settings of a route's step: ``pageRange`` picks pages in the first step only (slides
+    made into a PDF of the pages picked; that PDF is then read whole)."""
+    if index == 0 or not options or "pageRange" not in options:
+        return options
+    rest = {name: value for name, value in options.items() if name != "pageRange"}
+    return rest or None
+
+
 def _decode(data: bytes, encoding: str = "utf-8-sig") -> str:
     return data.decode(encoding)
 
@@ -88,9 +109,11 @@ class ConverterStudioDocumentConverter(ConverterStudioComponent):
     pictures by OCR, PDFs with a text layer, Word, OpenDocument, RTF and HTML documents, e-books,
     spreadsheets and presentations.
 
-    Each source is sent to the Converter Studio API, which makes plain text of it; the text
-    becomes one `Document`. Sources can be file paths, `ByteStream`s, or links (a `str` starting
-    with `http://` or `https://`, including Google Drive, Dropbox and OneDrive share links):
+    Each source is sent to the Converter Studio API, which makes plain text of it (or Markdown,
+    with `output_format="markdown"`); the text becomes one `Document`. A PDF's text keeps its page
+    breaks (form feeds), so Haystack's `DocumentSplitter` gives each chunk its `page_number`.
+    Sources can be file paths, `ByteStream`s, or links (a `str` starting with `http://` or
+    `https://`, including Google Drive, Dropbox and OneDrive share links):
     Converter Studio downloads a link itself. Plain-text formats (TXT, Markdown, CSV, JSON, XML,
     YAML, subtitles) are read locally, without a request.
 
@@ -117,6 +140,7 @@ class ConverterStudioDocumentConverter(ConverterStudioComponent):
         api_key: Secret = Secret.from_env_var(API_KEY_ENV),
         base_url: str | None = None,
         ocr: OCRMode = "auto",
+        output_format: OutputFormat = "text",
         options: dict[str, Any] | None = None,
         max_credits: int | None = None,
         timeout: float = DEFAULT_TIMEOUT,
@@ -138,6 +162,12 @@ class ConverterStudioDocumentConverter(ConverterStudioComponent):
             `"always"` (PDFs straight to OCR) or `"never"` (no OCR: scans and pictures are
             skipped). Pictures (JPG, PNG, HEIC, TIFF, WebP, BMP) are always read with OCR unless
             `"never"`.
+        :param output_format:
+            `"text"` (plain text) or `"markdown"`: Markdown for Word, OpenDocument, RTF and HTML
+            documents, which keeps their headings, lists and tables (it costs the same). Other
+            formats give the same text either way (a PDF's text with its page breaks, CSV for
+            spreadsheets); with `"markdown"`, `meta["converter_studio"]["content_format"]` says
+            which each Document holds: `"md"`, `"txt"`, `"csv"`...
         :param options:
             Conversion settings sent with every conversion, such as `{"ocrLanguage": "de"}` or
             `{"pageRange": "1-10"}` (see https://converter.studio/developers). Settings that do
@@ -161,6 +191,11 @@ class ConverterStudioDocumentConverter(ConverterStudioComponent):
             raise ValueError(f"ocr must be one of {', '.join(get_args(OCRMode))}, not {ocr!r}")
         if isinstance(options, Mapping) and "ocr" in options:
             raise ValueError('Choose OCR with ocr="always" (or "auto", "never"), not in options')
+        if output_format not in get_args(OutputFormat):
+            raise ValueError(
+                f"output_format must be one of {', '.join(get_args(OutputFormat))}, "
+                f"not {output_format!r}"
+            )
         # @component makes a new class from this one, so a bare super() would not find it.
         ConverterStudioComponent.__init__(
             self,
@@ -173,6 +208,7 @@ class ConverterStudioDocumentConverter(ConverterStudioComponent):
             concurrency_limit=concurrency_limit,
         )
         self.ocr: OCRMode = ocr
+        self.output_format: OutputFormat = output_format
         self.store_full_path = store_full_path
 
     def to_dict(self) -> dict[str, Any]:
@@ -185,6 +221,7 @@ class ConverterStudioDocumentConverter(ConverterStudioComponent):
         return default_to_dict(
             self,
             ocr=self.ocr,
+            output_format=self.output_format,
             store_full_path=self.store_full_path,
             **self._shared_init_parameters(),
         )
@@ -326,12 +363,13 @@ class ConverterStudioDocumentConverter(ConverterStudioComponent):
     ) -> tuple[str, dict[str, Any]]:
         if source is not None and source.id in LOCAL_TEXT_FORMATS:
             return self._local_text(item, source)
-        steps = text_steps(source, self.ocr)
+        steps = text_steps(source, self.ocr, self.output_format)
         file, name = catalog.upload(item, source)
         current, found, used_ocr = source, source.id if source else None, False
         try:
             for index, to in enumerate(steps):
-                conversion, data, ocr = self._step(client, file, name, current, to)
+                options = _step_options(self.options, index)
+                conversion, data, ocr = self._step(client, file, name, current, to, options)
                 found = found or conversion.from_format
                 used_ocr = used_ocr or ocr or _read_from_picture(catalog, conversion, to)
                 if index + 1 < len(steps):
@@ -343,19 +381,22 @@ class ConverterStudioDocumentConverter(ConverterStudioComponent):
             if source is not None or detected is None:
                 raise
             return self._text(client, catalog, item, detected)
-        return _decode(data), {"source_format": found, "ocr": used_ocr}
+        return _decode(data), self._info(found, used_ocr, steps[-1])
 
     async def _text_async(
         self, client: AsyncConverterStudio, catalog: Catalog, item: Input, source: Format | None
     ) -> tuple[str, dict[str, Any]]:
         if source is not None and source.id in LOCAL_TEXT_FORMATS:
             return self._local_text(item, source)
-        steps = text_steps(source, self.ocr)
+        steps = text_steps(source, self.ocr, self.output_format)
         file, name = catalog.upload(item, source)
         current, found, used_ocr = source, source.id if source else None, False
         try:
             for index, to in enumerate(steps):
-                conversion, data, ocr = await self._step_async(client, file, name, current, to)
+                options = _step_options(self.options, index)
+                conversion, data, ocr = await self._step_async(
+                    client, file, name, current, to, options
+                )
                 found = found or conversion.from_format
                 used_ocr = used_ocr or ocr or _read_from_picture(catalog, conversion, to)
                 if index + 1 < len(steps):
@@ -366,7 +407,7 @@ class ConverterStudioDocumentConverter(ConverterStudioComponent):
             if source is not None or detected is None:
                 raise
             return await self._text_async(client, catalog, item, detected)
-        return _decode(data), {"source_format": found, "ocr": used_ocr}
+        return _decode(data), self._info(found, used_ocr, steps[-1])
 
     def _local_text(self, item: Input, source: Format) -> tuple[str, dict[str, Any]]:
         if item.is_url:
@@ -375,10 +416,15 @@ class ConverterStudioDocumentConverter(ConverterStudioComponent):
                 "and read it with TextFileToDocument."
             )
         data = item.file if isinstance(item.file, bytes) else Path(item.file).read_bytes()
-        return _decode(data, item.encoding or "utf-8-sig"), {
-            "source_format": source.id,
-            "ocr": False,
-        }
+        return _decode(data, item.encoding or "utf-8-sig"), self._info(source.id, False, source.id)
+
+    def _info(self, source_format: str | None, ocr: bool, content_format: str) -> dict[str, Any]:
+        """``meta["converter_studio"]``: what the file was, whether OCR read it and, when Markdown
+        is asked for, the format of the Document's text (``md``, ``txt``, ``csv``...)."""
+        info: dict[str, Any] = {"source_format": source_format, "ocr": ocr}
+        if self.output_format == "markdown":
+            info["content_format"] = content_format
+        return info
 
     def _plan(self, current: Format | None, to: str) -> tuple[bool, bool]:
         """Whether this step starts with OCR, and whether it may fall back to OCR."""
@@ -392,18 +438,19 @@ class ConverterStudioDocumentConverter(ConverterStudioComponent):
         name: str | None,
         current: Format | None,
         to: str,
+        options: dict[str, Any] | None,
     ) -> tuple[Conversion, bytes, bool]:
         """One conversion and its result, and whether a PDF was read with OCR (as ``ocr`` says:
         ``auto`` asks for OCR only when the PDF turns out to have no text)."""
         ocr_first, may_retry = self._plan(current, to)
         try:
-            conversion = self._convert_once(client, file, name, to, ocr_first)
+            conversion = self._convert_once(client, file, name, to, ocr_first, options)
             used_ocr = ocr_first and conversion.from_format == "pdf"
         except ConversionFailedError as failed:
             if not (may_retry and _no_text_in_pdf(failed)):
                 raise
             logger.info("No text layer in {file}; reading it with OCR.", file=_label(file, name))
-            conversion = self._convert_once(client, file, name, to, True)
+            conversion = self._convert_once(client, file, name, to, True, options)
             used_ocr = True
         return conversion, client.download_bytes(conversion), used_ocr
 
@@ -414,39 +461,52 @@ class ConverterStudioDocumentConverter(ConverterStudioComponent):
         name: str | None,
         current: Format | None,
         to: str,
+        options: dict[str, Any] | None,
     ) -> tuple[Conversion, bytes, bool]:
         ocr_first, may_retry = self._plan(current, to)
         try:
-            conversion = await self._convert_once_async(client, file, name, to, ocr_first)
+            conversion = await self._convert_once_async(client, file, name, to, ocr_first, options)
             used_ocr = ocr_first and conversion.from_format == "pdf"
         except ConversionFailedError as failed:
             if not (may_retry and _no_text_in_pdf(failed)):
                 raise
             logger.info("No text layer in {file}; reading it with OCR.", file=_label(file, name))
-            conversion = await self._convert_once_async(client, file, name, to, True)
+            conversion = await self._convert_once_async(client, file, name, to, True, options)
             used_ocr = True
         return conversion, await client.download_bytes(conversion), used_ocr
 
     def _convert_once(
-        self, client: ConverterStudio, file: _File, name: str | None, to: str, ocr: bool
+        self,
+        client: ConverterStudio,
+        file: _File,
+        name: str | None,
+        to: str,
+        ocr: bool,
+        options: dict[str, Any] | None,
     ) -> Conversion:
         return client.convert(
             file,
             to,
             file_name=name,
-            options=_with_ocr(self.options, ocr),
+            options=_with_ocr(options, ocr),
             max_credits=self.max_credits,
             timeout=self.timeout,
         )
 
     async def _convert_once_async(
-        self, client: AsyncConverterStudio, file: _File, name: str | None, to: str, ocr: bool
+        self,
+        client: AsyncConverterStudio,
+        file: _File,
+        name: str | None,
+        to: str,
+        ocr: bool,
+        options: dict[str, Any] | None,
     ) -> Conversion:
         return await client.convert(
             file,
             to,
             file_name=name,
-            options=_with_ocr(self.options, ocr),
+            options=_with_ocr(options, ocr),
             max_credits=self.max_credits,
             timeout=self.timeout,
         )

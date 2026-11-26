@@ -40,6 +40,7 @@ def test_document_converter_to_dict() -> None:
             "api_key": ENV_KEY,
             "base_url": None,
             "ocr": "auto",
+            "output_format": "text",
             "options": None,
             "max_credits": None,
             "timeout": 600.0,
@@ -55,6 +56,7 @@ def test_document_converter_round_trip() -> None:
         api_key=Secret.from_env_var(["MY_KEY", "CONVERTER_STUDIO_API_KEY"], strict=False),
         base_url="http://localhost:8080/api",
         ocr="always",
+        output_format="markdown",
         options={"ocrLanguage": "de"},
         max_credits=5,
         timeout=120.0,
@@ -69,6 +71,26 @@ def test_document_converter_round_trip() -> None:
     assert isinstance(again, ConverterStudioDocumentConverter)
     assert again.api_key == component.api_key
     assert component_to_dict(again, "converter") == kept
+
+
+def test_a_pipeline_saved_by_1_0_loads_with_plain_text() -> None:
+    data = {
+        "type": DOCUMENT_TYPE,
+        "init_parameters": {
+            "api_key": ENV_KEY,
+            "base_url": None,
+            "ocr": "auto",
+            "options": None,
+            "max_credits": None,
+            "timeout": 600.0,
+            "store_full_path": False,
+            "raise_on_failure": False,
+            "concurrency_limit": 4,
+        },
+    }
+    component = component_from_dict(ConverterStudioDocumentConverter, data, "converter")
+    assert isinstance(component, ConverterStudioDocumentConverter)
+    assert component.output_format == "text"
 
 
 def test_file_converter_round_trip() -> None:
@@ -109,6 +131,24 @@ def test_an_indexing_pipeline(api: FakeAPI, files: Path) -> None:
         filters={"field": "meta.file_path", "operator": "==", "value": "scan.pdf"}
     )
     assert ocr[0].meta["converter_studio"]["ocr"] is True
+
+
+def test_page_breaks_give_each_chunk_its_page_number(api: FakeAPI, files: Path) -> None:
+    # The PDF's text keeps the API's page breaks (form feeds), in Markdown mode too: Haystack's
+    # DocumentSplitter numbers the pages of each chunk from them.
+    converter = ConverterStudioDocumentConverter(output_format="markdown")
+    converter._transport = api.transport()
+    pipeline = Pipeline()
+    pipeline.add_component("converter", converter)
+    pipeline.add_component("splitter", DocumentSplitter(split_by="line", split_length=1))
+    pipeline.connect("converter", "splitter")
+    result = pipeline.run({"converter": {"sources": [files / "report.pdf"]}})
+    chunks = result["splitter"]["documents"]
+    assert [(c.content.strip(), c.meta["page_number"]) for c in chunks if c.content.strip()] == [
+        ("Page one", 1),
+        ("Page two", 2),
+    ]
+    assert chunks[0].meta["converter_studio"]["content_format"] == "txt"
 
 
 def test_the_file_converter_feeds_haystack_converters(api: FakeAPI, files: Path) -> None:

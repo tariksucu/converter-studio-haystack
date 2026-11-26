@@ -73,7 +73,7 @@ How each kind of file becomes text:
 | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | PDF                                                 | Its text layer (pages separated by `\f`, as Haystack's own PDF converters do); a scan without text is read with OCR (see `ocr`) |
 | JPG, PNG, HEIC, TIFF, WebP, BMP                     | Read with OCR (the language is found on its own, or set `options={"ocrLanguage": "de"}`)                                        |
-| DOCX, DOC, ODT, RTF, HTML                           | Plain text                                                                                                                      |
+| DOCX, DOC, ODT, RTF, HTML                           | Plain text, or Markdown with `output_format="markdown"`                                                                         |
 | EPUB, MOBI, AZW3, FB2                               | Plain text                                                                                                                      |
 | XLSX, XLS, ODS                                      | CSV text of the first sheet (`options={"sheet": 2}` for another)                                                                |
 | PPTX, PPT, ODP, SVG, EPS, AI, camera RAW, GIF, AVIF | Made into a PDF, then its text (two conversions)                                                                                |
@@ -90,11 +90,41 @@ How each kind of file becomes text:
 OCR reads up to 50 pages of a PDF. Its text keeps the page's lines and table columns, without page
 separators.
 
+**Page numbers.** A PDF's text layer comes with a form feed (`\f`) after each page, and the text of
+slides (made into a PDF first) with one after each slide. Haystack's `DocumentSplitter` counts them
+and gives every chunk its `page_number`, so the Documents keep one per file. With
+`options={"pageRange": ...}` the count starts at the first page read, not at the PDF's own page
+number. OCR text has no page separators, so its chunks have no page numbers to go by.
+
+### Markdown
+
+`output_format="markdown"` asks for Markdown (GitHub's flavour, made by Pandoc) where Converter
+Studio makes it: Word (DOCX, DOC), OpenDocument (ODT), RTF and HTML documents. Their headings,
+lists and tables stay, which helps an LLM and Markdown-aware splitters; a document costs the same
+either way. Every other format gives the text it gives without the setting (a PDF's text with its
+page breaks, OCR text, CSV for spreadsheets), and `meta["converter_studio"]["content_format"]`
+says what each Document holds (`"md"`, `"txt"`, `"csv"`…):
+
+```python
+from haystack_integrations.components.converters.converter_studio import (
+    ConverterStudioDocumentConverter,
+)
+
+converter = ConverterStudioDocumentConverter(output_format="markdown")
+documents = converter.run(sources=["minutes.docx", "scanned-contract.pdf"])["documents"]
+print([d.meta["converter_studio"]["content_format"] for d in documents])  # ['md', 'txt']
+```
+
+The default stays `"text"`: Markdown changes the Documents' content, and so their IDs in a
+document store that already holds them, and steps written for plain text would meet `#` and `|`
+marks. A source whose format is not known before it is sent (a `ByteStream` without a name or MIME
+type, a link without an extension) is read as plain text.
+
 Each `Document` carries the metadata Haystack's converters carry: a `ByteStream`'s own `meta`,
 `file_path` (the file name, or the full path with `store_full_path=True`), `url` for a link, and
 the `meta` you pass to `run` (a dictionary for all sources, or a list with one per source). It
 also has `converter_studio`: `{"source_format": "pdf", "ocr": true}`, what the file was and
-whether OCR read it.
+whether OCR read it (and `content_format` with `output_format="markdown"`).
 
 ## Files to other formats
 
@@ -212,9 +242,9 @@ Both components take:
 | `raise_on_failure`  | `False`                                           | raise instead of skipping a source that cannot be converted                          |
 | `concurrency_limit` | `4`                                               | sources converted at the same time by `run_async`                                    |
 
-`ConverterStudioDocumentConverter` also takes `ocr` (`"auto"`, `"always"`, `"never"`) and
-`store_full_path`; `ConverterStudioFileConverter` takes `output_file_type`, which `run` can
-override.
+`ConverterStudioDocumentConverter` also takes `ocr` (`"auto"`, `"always"`, `"never"`),
+`output_format` (`"text"`, `"markdown"`) and `store_full_path`; `ConverterStudioFileConverter`
+takes `output_file_type`, which `run` can override.
 
 Both serialize with `to_dict` / `from_dict` and load from YAML (`Pipeline.loads`) without extra
 settings: the package lives in Haystack's `haystack_integrations` namespace.

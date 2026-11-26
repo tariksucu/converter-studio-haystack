@@ -112,6 +112,8 @@ BY_EXTENSION = {ext: item["id"] for item in FORMATS for ext in item["extensions"
 SCAN = b"%PDF-1.7 scanned pages, no text layer"
 TEXT_PDF = b"%PDF-1.7 with a text layer"
 BROKEN = b"broken bytes"
+#: What the fake makes of a Word file as Markdown (Pandoc's GitHub Markdown keeps tables).
+MARKDOWN = b"# Minutes\n\n| Item | Owner |\n|------|-------|\n| Budget | Ada |\n"
 
 
 @dataclass
@@ -301,6 +303,8 @@ class FakeAPI:
             return b"name,age\nAda,36\n"
         if source == "docx" and to == "txt":
             return "﻿Word text: café\n".encode()
+        if source == "docx" and to == "md":
+            return MARKDOWN
         if to == "pdf":
             return b"%PDF-1.7 made from " + source.encode()
         return f"{source} as {to}".encode()

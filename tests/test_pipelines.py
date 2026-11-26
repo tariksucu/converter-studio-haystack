@@ -135,12 +135,14 @@ def test_an_indexing_pipeline(api: FakeAPI, files: Path) -> None:
 
 def test_page_breaks_give_each_chunk_its_page_number(api: FakeAPI, files: Path) -> None:
     # The PDF's text keeps the API's page breaks (form feeds), in Markdown mode too: Haystack's
-    # DocumentSplitter numbers the pages of each chunk from them.
+    # DocumentSplitter numbers the pages of each chunk from them. Split by page, the way that
+    # numbers pages alike in every Haystack version (split by line counts them differently in
+    # 2.20-2.29).
     converter = ConverterStudioDocumentConverter(output_format="markdown")
     converter._transport = api.transport()
     pipeline = Pipeline()
     pipeline.add_component("converter", converter)
-    pipeline.add_component("splitter", DocumentSplitter(split_by="line", split_length=1))
+    pipeline.add_component("splitter", DocumentSplitter(split_by="page", split_length=1))
     pipeline.connect("converter", "splitter")
     result = pipeline.run({"converter": {"sources": [files / "report.pdf"]}})
     chunks = result["splitter"]["documents"]
